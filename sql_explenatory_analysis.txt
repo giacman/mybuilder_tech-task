@@ -1,0 +1,218 @@
+-- 1) Data Exploration:
+
+-- Customer happiness cohorts is the main table containing the resuilt for each cohort 
+-- there are 291 cohorts. There are 2 types, job_poster and tradesman
+SELECT * FROM customer_happiness_cohorts
+WHERE id = 208
+;
+
+SELECT type, COUNT(*) FROM customer_happiness_cohorts
+GROUP BY type
+;
+
+-- customer happiness questions is the rating given by each user in each cohort
+-- it links to the above via id = cohort_id. It also contains the requested at, answered at and rejected at. 
+SELECT COUNT(*) FROM customer_happiness_questions
+;
+
+SELECT * FROM customer_happiness_questions
+WHERE cohort_id = 208
+;
+
+SELECT cohort_id, COUNT(user_id) FROM customer_happiness_questions
+GROUP BY cohort_id ORDER BY cohort_id
+;
+
+-- looking at trendsmen cohorts growth over time.
+SELECT t.cohort_id, COUNT(t.user_id) 
+	FROM (
+	SELECT * FROM customer_happiness_questions
+	WHERE cohort_id IN (
+	SELECT cohort_id FROM customer_happiness_cohorts WHERE type = 'tradesman'
+	)
+	) t
+GROUP BY t.cohort_id 
+ORDER BY t.cohort_id
+;
+-- NOte: cohort 138 had an anusually high number of tradesman.
+
+-- Below two tables are activity data on tradesman
+
+-- This contains 492k feedbacks on tradesman. Feedback can be -1, 0 or 1 corresponding to negative, neutral and positive.
+SELECT *
+FROM tradesmen_feedback
+LIMIT 100;
+
+SELECT COUNT(*), rating_text, MAX(feedback_rating) as feedback_rating
+FROM tradesmen_feedback
+GROUP BY rating_text
+;
+
+-- This table records the "last interest expressed at" for each tradesman and the corresponding rating. We can use this table to highlight a correlation between latest activity and ??
+SELECT * FROM tradesmen_last_interest
+LIMIT 100
+;
+
+SELECT COUNT(user_id), COUNT(DISTINCT user_id) FROM tradesmen_last_interest;
+
+-- Below demogrpahics data on tradesman
+
+-- This table records the tradesman trades. This table contains multiple wentries for each treadsmen.
+SELECT * FROM tradesmen_trades
+LIMIT 10;
+
+SELECT COUNT(*),COUNT( DISTINCT user_id) FROM tradesmen_trades
+;
+
+SELECT name, COUNT(*) FROM tradesmen_trades
+GROUP BY name
+;
+
+-- This contains location and long lat for tradesman. We use this dimenstion to see if there is any particular pattern in the data that highlights a trend in a specific area and we could go as far as plotting on a map.
+SELECT * FROM tradesman_locations
+LIMIT 1
+;
+
+SELECT COUNT(DISTINCT user_id), COUNT(*) FROM tradesman_locations
+;
+
+SELECT county, COUNT(*) FROM tradesman_locations
+GROUP BY county
+;
+
+-- 2) Exploring Seasonality:
+
+-- Seasonality by month
+WITH t AS 
+	(
+	SELECT 
+	DATE_PART('month',end_of_period) as cohort_month, 
+	DATE_PART('year',end_of_period) AS cohort_year, *
+	FROM customer_happiness_cohorts
+	WHERE type = 'tradesman'
+	) 
+SELECT cohort_month, AVG(net_promoter_score) as monthly_average_score 
+FROM t
+GROUP BY cohort_month
+ORDER BY monthly_average_score 
+;
+
+-- Seasonality by year and month
+WITH t AS 
+	(
+	SELECT 
+	DATE_PART('month',end_of_period) as cohort_month, 
+	DATE_PART('year',end_of_period) AS cohort_year, *
+	FROM customer_happiness_cohorts
+	WHERE type = 'tradesman'
+	) 
+SELECT cohort_year, cohort_month, AVG(net_promoter_score) as monthly_average_score 
+FROM t
+GROUP BY cohort_month, cohort_year
+ORDER BY cohort_year, monthly_average_score DESC
+;
+
+-- Seasonality by year and quarter
+WITH t AS 
+	(
+	SELECT 
+	DATE_PART('quarter',end_of_period) as cohort_quarter, 
+	DATE_PART('year',end_of_period) AS cohort_year,*
+	FROM customer_happiness_cohorts
+	WHERE type = 'tradesman'
+	) 
+SELECT cohort_year, cohort_quarter, AVG(net_promoter_score) as quarterly_average_score 
+FROM t
+GROUP BY cohort_year,cohort_quarter
+ORDER BY quarterly_average_score DESC
+;
+
+-- ratio-to-moving average method using window function on year and quarter separate
+
+WITH final_table AS (
+
+		WITH mid_table AS 
+			( 
+			SELECT cohort_year, cohort_quarter, AVG(net_promoter_score) as quarterly_average_score 
+			FROM 
+				(SELECT 
+				DATE_PART('quarter',end_of_period) as cohort_quarter, 
+				DATE_PART('year',end_of_period) AS cohort_year,*
+				FROM customer_happiness_cohorts
+				WHERE type = 'tradesman') t
+			GROUP BY cohort_year,cohort_quarter
+			ORDER BY quarterly_average_score DESC
+			) 
+			SELECT 
+				cohort_year,cohort_quarter, 
+				quarterly_average_score, 
+				AVG(quarterly_average_score) OVER (order by cohort_year, cohort_quarter rows between 1 preceding and 2 following) as moving_average 
+			FROM mid_table
+			order by cohort_year, cohort_quarter asc
+			)
+SELECT 
+	cohort_year,cohort_quarter, 
+	quarterly_average_score/moving_average
+	AS seasonal_index 
+FROM final_table
+ORDER BY seasonal_index DESC
+;
+
+-- Results:
+
+-- The final_table shows the seasonality index of NPS for each quarter. 
+-- An index abobe 1 means that the quarter has a performance higher than average trend, while an index below 1 shows the opposite, which means the quarter performed below average trend.
+
+-- As we can see from the final_table the best performing quarters in terms of NPS are Q3 and Q4, consistently over the years. Q2 is consistently scoring an NPS average trend in the middle over the years, while Q1 has been the low performing quarter across all years.
+
+-- We can thereore conclude that there is a clear seasonality effect in the data, with NPS going down in the first Q1 and then progressivly going up until reaching its max on Q3 and Q4.
+
+-- Interpretation:
+
+-- HP 1) 
+---The majority of home works/constructions works and renovations tend to be done during the summer period. Treadsmen are happier when there are higher volumes of works, and tend to be less happy when volumes are lower. This can be related to the pricing model used by mybuild.com. In times of relative scarsity of jobs tradesmen are more likely to be shortlisted but not einding up winning the work, as opposed to period when there is an abundance of work. This can be one of the main reasons for treadsmen being less happier during Q1 and Q2.
+
+-- Validating HP1): I would need to show that in Q3 and Q4 volume of jobs on the platform is usually lower, but I do not have that data. the information that I have on the different cohorts is: locations, tradesmen_feedback, tradesman_last_interest and trademens_trade.
+
+-- HP 2) Tradesmen tend to give lower NPS if they are getting on average lower ratings.
+	-- A) check if tredsman with lower ratings tend to give lower score
+	-- B) Check if tredsman in Q1 tend to have lower ratings.
+
+
+SELECT * 
+FROM tradesmen_feedback
+LIMIT 10
+
+;
+
+
+--- 2) Marketing wants to run campaing to get more treadsmen. Given NPS data, which types and locations should they focus on?
+-- for this I would look at the locations and trades with Lower NPS score. We can assume that in those segments WOM is not going to be as effective as in other segments, therefore the recommendation is to focus spending on those segments to maximise return.
+
+WITH ranked_users_table AS (
+SELECT id, user_id, 
+	CASE
+		WHEN rating < 7 THEN 'Detractor'
+		WHEN rating > 8 THEN 'Promoter'
+		ELSE 'Passive'
+	END as user_rank
+FROM customer_happiness_questions
+ ) SELECT 
+ 	user_rank, 
+ 	COUNT(DISTINCT rut.user_id) AS count_users,
+ 	tl.county
+ 	FROM ranked_users_table rut
+ 	JOIN tradesman_locations tl ON tl.user_id = rut.user_id
+ 	JOIN (
+ 		SELECT *, 
+		RANK() OVER (order by pref_rank)
+		FROM tradesmen_trades 
+ 		)tt ON tl.user_id = tt.user_id
+ 	WHERE tt.rank = 1 AND user_rank = 'Detractor'
+ 	GROUP BY rut.user_rank, tl.county
+ 	ORDER BY count_users DESC
+ ;
+ -- this above has to be percentage of total not overall, as come counties are significntly bigger then others.
+ 
+ 
+ 
