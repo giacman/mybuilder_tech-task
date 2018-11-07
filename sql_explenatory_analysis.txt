@@ -152,31 +152,45 @@ WITH final_table AS (
 			)
 SELECT 
 	cohort_year,cohort_quarter, 
-	quarterly_average_score/moving_average
-	AS seasonal_index 
+	quarterly_average_score/moving_average AS seasonal_index,
+	quarterly_average_score,
+	moving_average
 FROM final_table
 ORDER BY seasonal_index DESC
 ;
 
--- Results:
 
--- The final_table shows the seasonality index of NPS for each quarter. 
--- An index abobe 1 means that the quarter has a performance higher than average trend, while an index below 1 shows the opposite, which means the quarter performed below average trend.
+-- ratio-to-moving average method using window function on year and month separate
 
--- As we can see from the final_table the best performing quarters in terms of NPS are Q3 and Q4, consistently over the years. Q2 is consistently scoring an NPS average trend in the middle over the years, while Q1 has been the low performing quarter across all years.
+WITH final_table AS (
 
--- We can thereore conclude that there is a clear seasonality effect in the data, with NPS going down in the first Q1 and then progressivly going up until reaching its max on Q3 and Q4.
-
--- Interpretation:
-
--- HP 1) 
----The majority of home works/constructions works and renovations tend to be done during the summer period. Treadsmen are happier when there are higher volumes of works, and tend to be less happy when volumes are lower. This can be related to the pricing model used by mybuild.com. In times of relative scarsity of jobs tradesmen are more likely to be shortlisted but not einding up winning the work, as opposed to period when there is an abundance of work. This can be one of the main reasons for treadsmen being less happier during Q1 and Q2.
-
--- Validating HP1): I would need to show that in Q3 and Q4 volume of jobs on the platform is usually lower, but I do not have that data. the information that I have on the different cohorts is: locations, tradesmen_feedback, tradesman_last_interest and trademens_trade.
-
--- HP 2) Tradesmen tend to give lower NPS if they are getting on average lower ratings.
-	-- A) check if tredsman with lower ratings tend to give lower score
-	-- B) Check if tredsman in Q1 tend to have lower ratings.
+		WITH mid_table AS 
+			( 
+			SELECT cohort_year, cohort_month, AVG(net_promoter_score) as monthly_average_score 
+			FROM 
+				(SELECT 
+				DATE_PART('month',end_of_period) as cohort_month, 
+				DATE_PART('year',end_of_period) AS cohort_year,*
+				FROM customer_happiness_cohorts
+				WHERE type = 'tradesman') t
+			GROUP BY cohort_year,cohort_month
+			ORDER BY monthly_average_score DESC
+			) 
+			SELECT 
+				cohort_year,cohort_month, 
+				monthly_average_score, 
+				AVG(monthly_average_score) OVER (order by cohort_year, cohort_month rows between 1 preceding and 2 following) as moving_average 
+			FROM mid_table
+			order by cohort_year, cohort_month asc
+			)
+SELECT 
+	cohort_year,cohort_month, 
+	monthly_average_score/moving_average AS seasonal_index,
+	monthly_average_score,
+	moving_average
+FROM final_table
+ORDER BY seasonal_index DESC
+;
 
 
 SELECT * 
@@ -186,8 +200,6 @@ LIMIT 10
 ;
 
 
---- 2) Marketing wants to run campaing to get more treadsmen. Given NPS data, which types and locations should they focus on?
--- for this I would look at the locations and trades with Lower NPS score. We can assume that in those segments WOM is not going to be as effective as in other segments, therefore the recommendation is to focus spending on those segments to maximise return.
 
 WITH ranked_users_table AS (
 SELECT id, user_id, 
@@ -207,12 +219,144 @@ FROM customer_happiness_questions
  		SELECT *, 
 		RANK() OVER (order by pref_rank)
 		FROM tradesmen_trades 
- 		)tt ON tl.user_id = tt.user_id
- 	WHERE tt.rank = 1 AND user_rank = 'Detractor'
+ 		)tt ON tl.user_id = tt.user_id -- using only top ranked trade for simplicity
+ 	WHERE tt.rank = 1 
  	GROUP BY rut.user_rank, tl.county
  	ORDER BY count_users DESC
  ;
  -- this above has to be percentage of total not overall, as come counties are significntly bigger then others.
  
  
+ WITH ranked_users_table AS (
+SELECT id, user_id, 
+	CASE
+		WHEN rating < 7 THEN 'Detractor'
+		WHEN rating > 8 THEN 'Promoter'
+		ELSE 'Passive'
+	END as user_rank
+FROM customer_happiness_questions
+ ) SELECT 
+ 	user_rank, 
+ 	COUNT(DISTINCT rut.user_id) AS count_users,
+ 	tl.county, tt.name
+ 	FROM ranked_users_table rut
+ 	JOIN tradesman_locations tl ON tl.user_id = rut.user_id
+ 	JOIN (
+ 		SELECT *, 
+		RANK() OVER (order by pref_rank)
+		FROM tradesmen_trades 
+ 		)tt ON tl.user_id = tt.user_id -- using only top ranked trade for simplicity
+ 	WHERE tt.rank = 1 
+ 	GROUP BY rut.user_rank, tl.county, tt.name
+ 	ORDER BY count_users DESC
+ ;
+
+
+
+ WITH ranked_users_table AS (
+SELECT id, user_id, 
+	CASE
+		WHEN rating < 7 THEN 'Detractor'
+		WHEN rating > 8 THEN 'Promoter'
+		ELSE 'Passive'
+	END as user_rank
+FROM customer_happiness_questions
+ ) SELECT 
+ 	user_rank, 
+ 	COUNT(DISTINCT rut.user_id) AS count_users,
+ 	tl.county, tt.name
+ 	FROM ranked_users_table rut
+ 	JOIN tradesman_locations tl ON tl.user_id = rut.user_id
+ 	JOIN (
+ 		SELECT *
+		FROM tradesmen_trades 
+		WHERE pref_rank = 1 
+ 		)tt ON tl.user_id = tt.user_id -- using only top ranked trade for simplicity
+ 	GROUP BY rut.user_rank, tl.county, tt.name
+ 	ORDER BY count_users DESC
+ ;
+   
+
+ SELECT 
+-- 	chq.*,
+-- 	tl.county,
+-- 	tt.*
+	COUNT(*) as tot_users,
+	COUNT(DISTINCT chq.user_id) as unique_users
+ 	FROM customer_happiness_questions chq
+ 	JOIN tradesman_locations tl ON tl.user_id = chq.user_id
+ 	JOIN (
+ 		SELECT *, 
+		RANK() OVER (order by pref_rank)
+		FROM tradesmen_trades 
+ 		)tt ON tl.user_id = tt.user_id -- using only top ranked trade for simplicity
+ 	WHERE tt.rank = 1 
+ ;
+ 
+ 
+  SELECT COUNT(*) FROM customer_happiness_questions
+ ;
+ 
+
+  SELECT COUNT(*) FROM tradesman_locations
+ ;
+  
+   	SELECT *
+		FROM tradesmen_trades 
+		WHERE pref_rank = 1
+		;
+
+   	SELECT *
+		FROM tradesmen_last_interest 
+		;
+				
+		
+		
+WITH ranked_users_table AS (
+SELECT id, user_id, 
+ rating
+FROM customer_happiness_questions
+ ) SELECT 
+ 	rating, 
+ 	rut.user_id,
+ 	tl.county,
+    tt.name as trade
+ 	FROM ranked_users_table rut
+ 	JOIN tradesman_locations tl ON tl.user_id = rut.user_id
+ 	JOIN (
+ 		SELECT *
+		FROM tradesmen_trades 
+		WHERE pref_rank = 1 
+ 		)tt ON tl.user_id = tt.user_id -- using only top ranked trade for simplicity
+ ;
+ 
+ -- this below shoudl be 28897 to have unique latest vote
+ 
+ WITH latest_users_survey AS (
+	SELECT customer_happiness_questions_id
+		FROM (
+		SELECT customer_happiness_questions_id, 
+		ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY last_interest_expressed_at DESC) AS rn
+		FROM tradesmen_last_interest
+		) t
+		WHERE rn = 1
+		)
+	SELECT 
+	CASE
+		WHEN chq.rating < 7 THEN 'Detractor'
+		WHEN chq.rating > 8 THEN 'Promoter'
+		ELSE 'Passive'
+	END as user_type,
+ 	chq.user_id,
+ 	tl.county,
+    tt.name as trade
+ 	FROM customer_happiness_questions chq
+ 	JOIN latest_users_survey lus ON chq.id = lus.customer_happiness_questions_id
+ 	JOIN tradesman_locations tl ON tl.user_id = chq.user_id
+ 	JOIN (
+ 		SELECT *
+		FROM tradesmen_trades 
+		WHERE pref_rank = 1 
+ 		)tt ON tl.user_id = tt.user_id -- using only top ranked trade for simplicity
+ ;
  
